@@ -120,6 +120,8 @@ services:
       # 可选配置
       # - MAX_FILE_SIZE=104857600 # 最大文件大小，默认 100MB
       # - THUMBNAIL_WIDTH=0 # 瀑布流缩略图宽度（像素），默认 0 表示使用原图
+      # - AUTO_RENAME_UPLOADS=true # 上传图片自动重命名，默认关闭
+      # - UPLOAD_RENAME_PATTERN=IMG_{datetime}_{random} # 自动重命名格式
       # - PASSWORD=your_secure_password_here # 🔐 密码保护配置
       # - PUBLIC_IMAGE_ACCESS=true # 设置 PASSWORD 后如仍需公开直链，可开启
       # - ENABLE_MAGIC_SEARCH=true # ✨ 开启魔法搜索（使用本地CLIP小模型，占用内存较高）
@@ -134,6 +136,17 @@ services:
 | `ENABLE_MAGIC_SEARCH`| 是否开启 AI 魔法搜索 | `true` / `false` |
 | `MAX_FILE_SIZE` | 最大上传文件限制 (Byte) | `104857600` (100MB) |
 | `THUMBNAIL_WIDTH` | 列表缩略图宽度 (px) | `0` (原图) / `500` |
+| `AUTO_RENAME_UPLOADS` | 是否开启上传图片自动重命名 | `true` / `false` |
+| `UPLOAD_RENAME_PATTERN` | 自动重命名格式，扩展名会自动保留 | `IMG_{datetime}_{random}` |
+
+### 🏷️ 自动重命名格式建议
+
+可用占位符：`{datetime}`、`{date}`、`{time}`、`{timestamp}`、`{random}`、`{uuid}`、`{name}`。扩展名会根据原文件或 MIME 自动保留。
+
+- 推荐：`IMG_{datetime}_{random}`，例如 `IMG_20260627-214501_a1b2c3d4.jpg`
+- 保留来源：`{name}_{datetime}`，例如 `cat_20260627-214501.jpg`
+- 强唯一：`{uuid}`，例如 `550e8400-e29b-41d4-a716-446655440000.jpg`
+- 时间戳：`{timestamp}_{random}`，例如 `1782577501000_a1b2c3d4.jpg`
 
 > **注意**：
 > 1. 设置 `PASSWORD` 后，系统会自动启用登录保护。

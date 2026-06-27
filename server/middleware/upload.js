@@ -2,7 +2,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs-extra');
 const config = require('../../config');
-const { safeJoin, sanitizeFilename } = require('../utils/fileUtils');
+const { getUploadFilename, normalizeOriginalName, resolveDuplicateFilename, safeJoin } = require('../utils/fileUtils');
 
 const STORAGE_PATH = config.storage.path;
 
@@ -44,46 +44,24 @@ const storage = multer.diskStorage({
         }
     },
     filename: (req, file, cb) => {
-        let originalName = file.originalname;
-        if (!/[^\u0000-\u00ff]/.test(originalName)) {
-            try {
-                originalName = Buffer.from(originalName, "latin1").toString("utf8");
-            } catch (e) { }
-        }
-
-        const sanitizedName = sanitizeFilename(originalName);
+        const originalName = normalizeOriginalName(file.originalname);
         const forceOverwrite =
             req.query.overwrite === "true" ||
             req.body?.overwrite === "true" ||
             req.query.overwrite === true ||
             req.body?.overwrite === true;
+        const initialName = getUploadFilename(originalName, file.mimetype, path.extname(originalName) || ".png", {
+            forceOriginal: forceOverwrite
+        });
 
         if (forceOverwrite) {
-            return cb(null, sanitizedName);
+            return cb(null, initialName);
         }
-
-        const ext = path.extname(sanitizedName);
-        const nameWithoutExt = path.basename(sanitizedName, ext);
-        let finalName = sanitizedName;
-        let counter = 1;
 
         let dir = req.query.dir || req.body.dir || "";
         dir = dir.replace(/\\/g, "/");
         const dest = safeJoin(STORAGE_PATH, dir);
-
-        if (!config.upload.allowDuplicateNames) {
-            while (fs.existsSync(path.join(dest, finalName))) {
-                if (config.upload.duplicateStrategy === "timestamp") {
-                    finalName = `${nameWithoutExt}_${Date.now()}_${counter}${ext}`;
-                } else if (config.upload.duplicateStrategy === "counter") {
-                    finalName = `${nameWithoutExt}_${counter}${ext}`;
-                } else if (config.upload.duplicateStrategy === "overwrite") {
-                    break;
-                }
-                counter++;
-            }
-        }
-        cb(null, finalName);
+        cb(null, resolveDuplicateFilename(dest, initialName));
     },
 });
 

@@ -30,6 +30,7 @@ router.get('/config', (req, res) => {
                 maxFileSize: config.upload.maxFileSize,
                 allowedExtensions: config.upload.allowedExtensions,
                 thumbnailWidth: config.upload.thumbnailWidth,
+                autoRename: config.upload.autoRename,
             },
             storage: {
                 filename: config.storage.filename

@@ -3,9 +3,30 @@ const fs = require('fs-extra');
 const sharp = require('sharp');
 const dns = require('dns').promises;
 const net = require('net');
+const crypto = require('crypto');
 const config = require('../../config');
 
 const CACHE_DIR_NAME = ".cache";
+const IMAGE_MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+};
+const SAFE_IMAGE_EXTENSIONS = new Set([
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".bmp",
+    ".svg",
+]);
 
 function safeJoin(base, target) {
     const resolvedBase = path.resolve(base);
@@ -39,6 +60,103 @@ function sanitizeFilename(filename) {
             config.storage.filename.specialCharReplacement
         );
     }
+}
+
+function normalizeOriginalName(originalName) {
+    let normalized = originalName || "";
+    if (Buffer.isBuffer(normalized)) {
+        normalized = normalized.toString("utf8");
+    }
+    if (!/[^\u0000-\u00ff]/.test(normalized)) {
+        try {
+            normalized = Buffer.from(normalized, "latin1").toString("utf8");
+        } catch (e) { }
+    }
+    return normalized;
+}
+
+function isImageMimeType(mimetype) {
+    return String(mimetype || "").toLowerCase().startsWith("image/");
+}
+
+function getExtensionFromNameOrMime(originalName, mimetype, fallbackExt = ".png") {
+    const nameExt = path.extname(originalName || "").toLowerCase();
+    if (nameExt && (!isImageMimeType(mimetype) || SAFE_IMAGE_EXTENSIONS.has(nameExt))) {
+        return nameExt;
+    }
+
+    const mimeExt = IMAGE_MIME_EXTENSIONS[String(mimetype || "").toLowerCase()];
+    if (mimeExt) return mimeExt;
+
+    const normalizedFallback = String(fallbackExt || ".png").toLowerCase();
+    return normalizedFallback.startsWith(".") ? normalizedFallback : `.${normalizedFallback}`;
+}
+
+function formatDatePart(value) {
+    return String(value).padStart(2, "0");
+}
+
+function getRenameDateParts(now = new Date()) {
+    const year = now.getFullYear();
+    const month = formatDatePart(now.getMonth() + 1);
+    const day = formatDatePart(now.getDate());
+    const hour = formatDatePart(now.getHours());
+    const minute = formatDatePart(now.getMinutes());
+    const second = formatDatePart(now.getSeconds());
+    return {
+        date: `${year}${month}${day}`,
+        time: `${hour}${minute}${second}`,
+        datetime: `${year}${month}${day}-${hour}${minute}${second}`,
+    };
+}
+
+function buildAutoRenameFilename(originalName, mimetype, fallbackExt = ".png") {
+    const normalizedName = normalizeOriginalName(originalName);
+    const ext = getExtensionFromNameOrMime(normalizedName, mimetype, fallbackExt);
+    const originalBase = sanitizeFilename(path.basename(normalizedName || "image", path.extname(normalizedName || ""))) || "image";
+    const dateParts = getRenameDateParts();
+    const tokens = {
+        ...dateParts,
+        timestamp: String(Date.now()),
+        random: crypto.randomBytes(4).toString("hex"),
+        uuid: crypto.randomUUID(),
+        name: originalBase,
+    };
+
+    const rawPattern = config.upload.autoRename.pattern || "IMG_{datetime}_{random}";
+    const rendered = rawPattern.replace(/\{(date|time|datetime|timestamp|random|uuid|name)\}/g, (_, key) => tokens[key]);
+    const safeBase = sanitizeFilename(rendered).replace(/^\.+$/, "") || `IMG_${tokens.datetime}_${tokens.random}`;
+    return `${safeBase}${ext}`;
+}
+
+function getUploadFilename(originalName, mimetype, fallbackExt = ".png", options = {}) {
+    const normalizedName = normalizeOriginalName(originalName);
+    if (!options.forceOriginal && config.upload.autoRename.enabled && isImageMimeType(mimetype)) {
+        return buildAutoRenameFilename(normalizedName, mimetype, fallbackExt);
+    }
+    return sanitizeFilename(normalizedName || `upload${getExtensionFromNameOrMime("", mimetype, fallbackExt)}`);
+}
+
+function resolveDuplicateFilename(dest, filename) {
+    if (config.upload.allowDuplicateNames) return filename;
+
+    const ext = path.extname(filename);
+    const nameWithoutExt = path.basename(filename, ext);
+    let finalName = filename;
+    let counter = 1;
+
+    while (fs.existsSync(path.join(dest, finalName))) {
+        if (config.upload.duplicateStrategy === "timestamp") {
+            finalName = `${nameWithoutExt}_${Date.now()}_${counter}${ext}`;
+        } else if (config.upload.duplicateStrategy === "counter") {
+            finalName = `${nameWithoutExt}_${counter}${ext}`;
+        } else if (config.upload.duplicateStrategy === "overwrite") {
+            break;
+        }
+        counter++;
+    }
+
+    return finalName;
 }
 
 async function generateThumbHash(filePath) {
@@ -88,7 +206,7 @@ async function getThumbHash(filePath) {
     }
 }
 
-async function saveBase64Image(base64Data, dir) {
+async function saveBase64Image(base64Data, dir, options = {}) {
     const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
         throw new Error('无效的 base64 图片格式');
@@ -100,12 +218,14 @@ async function saveBase64Image(base64Data, dir) {
     }
     const buffer = Buffer.from(matches[2], 'base64');
 
-    const ext = mimetype.split('/')[1] || 'png';
-    const filename = `${Date.now()}-${Math.floor(Math.random() * 1000)}.${ext}`;
-
     const targetDir = safeJoin(config.storage.path, dir);
     await fs.ensureDir(targetDir);
 
+    const ext = getExtensionFromNameOrMime(options.originalName, mimetype, "png");
+    const initialFilename = config.upload.autoRename.enabled
+        ? getUploadFilename(options.originalName || `upload${ext}`, mimetype, ext)
+        : `${Date.now()}-${Math.floor(Math.random() * 1000)}${ext}`;
+    const filename = resolveDuplicateFilename(targetDir, initialFilename);
     const filePath = path.join(targetDir, filename);
     await fs.promises.writeFile(filePath, buffer);
 
@@ -285,6 +405,10 @@ module.exports = {
     sanitizeFilename,
     generateThumbHash,
     getThumbHash,
+    getUploadFilename,
+    isImageMimeType,
+    normalizeOriginalName,
+    resolveDuplicateFilename,
     saveBase64Image,
     downloadFromUrl,
     CACHE_DIR_NAME,

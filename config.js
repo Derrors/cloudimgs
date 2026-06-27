@@ -33,6 +33,12 @@ module.exports = {
     // 文件名冲突时的处理策略: 'timestamp' | 'counter' | 'overwrite'
     duplicateStrategy: process.env.DUPLICATE_STRATEGY || "timestamp",
 
+    // 上传图片自动重命名
+    autoRename: {
+      enabled: process.env.AUTO_RENAME_UPLOADS === "true",
+      pattern: process.env.UPLOAD_RENAME_PATTERN || "IMG_{datetime}_{random}",
+    },
+
     // 瀑布流缩略图宽度（像素），0 表示使用原图
     thumbnailWidth: process.env.THUMBNAIL_WIDTH
       ? parseInt(process.env.THUMBNAIL_WIDTH)

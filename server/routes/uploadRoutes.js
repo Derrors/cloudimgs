@@ -4,7 +4,15 @@ const fs = require('fs-extra');
 const config = require('../../config');
 const { upload, uploadAny, handleMulterError } = require('../middleware/upload');
 const { requirePassword } = require('../middleware/auth');
-const { saveBase64Image, safeJoin, sanitizeFilename, generateThumbHash, downloadFromUrl } = require('../utils/fileUtils');
+const {
+    getUploadFilename,
+    normalizeOriginalName,
+    resolveDuplicateFilename,
+    saveBase64Image,
+    safeJoin,
+    sanitizeFilename,
+    downloadFromUrl
+} = require('../utils/fileUtils');
 const { formatImageResponse } = require('../utils/urlUtils');
 const imageRepository = require('../db/imageRepository');
 const { getFileMetadata, parseAudioDuration } = require('../services/metadataService');
@@ -46,16 +54,20 @@ router.post('/upload-base64', requirePassword, express.json({ limit: '50mb' }), 
             return res.status(400).json({ success: false, error: "缺少 base64Image 参数" });
         }
 
-        const { filename, filePath, size, mimetype } = await saveBase64Image(req.body.base64Image, dir);
+        const requestedOriginalName = req.body.originalName || "";
+        const { filename, filePath, size, mimetype } = await saveBase64Image(req.body.base64Image, dir, {
+            originalName: requestedOriginalName
+        });
         const relPath = path.join(dir, filename).replace(/\\/g, "/");
 
         // 生成元数据和 DB 条目
         const metadata = await getFileMetadata(filePath, relPath);
         // Base64 上传通常没有原始名称，使用清理后的文件名或提供的名称
-        const originalName = req.body.originalName || filename;
+        const originalName = normalizeOriginalName(requestedOriginalName || filename);
+        const dbFilename = config.upload.autoRename.enabled ? filename : sanitizeFilename(originalName);
 
         const fileInfo = {
-            filename: metadata.filename || filename, // metadata might not have filename set if constructed manually
+            filename: metadata.filename || dbFilename, // metadata might not have filename set if constructed manually
             rel_path: relPath,
             ...metadata
         };
@@ -63,13 +75,13 @@ router.post('/upload-base64', requirePassword, express.json({ limit: '50mb' }), 
         // 确保文件名在 DB 对象中设置（getFileMetadata 返回带有 size, mtime 等的对象）
         // imageRepository 期望：filename, rel_path, ...metadata
         const dbResult = imageRepository.add({
-            filename: sanitizeFilename(originalName),
+            filename: dbFilename,
             rel_path: relPath,
             ...metadata
         });
 
         // 添加到魔法搜图队列
-        queueForMagicSearch(dbResult, relPath, fileInfo.filename);
+        queueForMagicSearch(dbResult, relPath, dbFilename);
 
         // 记录上传统计信息
         imageRepository.recordUpload(size);
@@ -121,34 +133,37 @@ router.post('/upload-url', requirePassword, express.json({ limit: '10mb' }), asy
         }
 
         // Convert to base64 and save
+        // Extract original name from URL if possible
+        const urlPathname = new URL(url).pathname;
+        const urlFilename = decodeURIComponent(urlPathname.split('/').pop() || "url-image");
+        const ext = path.extname(urlFilename);
+        const nameWithoutExt = path.basename(urlFilename, ext);
+        const originalName = ext ? `${nameWithoutExt}${ext}` : urlFilename;
+
         const base64Data = `data:${imageData.mimetype};base64,${imageData.buffer.toString('base64')}`;
-        const { filename, filePath, size, mimetype } = await saveBase64Image(base64Data, dir);
+        const { filename, filePath, size, mimetype } = await saveBase64Image(base64Data, dir, {
+            originalName
+        });
         const relPath = path.join(dir, filename).replace(/\\/g, "/");
 
         // Generate metadata
         const metadata = await getFileMetadata(filePath, relPath);
-
-        // Extract original name from URL if possible
-        const urlPathname = new URL(url).pathname;
-        const urlFilename = decodeURIComponent(urlPathname.split('/').pop() || filename);
-        const ext = path.extname(urlFilename);
-        const nameWithoutExt = path.basename(urlFilename, ext);
-        const originalName = ext ? `${nameWithoutExt}${ext}` : filename;
+        const dbFilename = config.upload.autoRename.enabled ? filename : sanitizeFilename(originalName);
 
         const dbResult = imageRepository.add({
-            filename: sanitizeFilename(originalName),
+            filename: dbFilename,
             rel_path: relPath,
             ...metadata
         });
 
         // Add to magic search queue
-        queueForMagicSearch(dbResult, relPath, originalName);
+        queueForMagicSearch(dbResult, relPath, dbFilename);
 
         // Record upload stats
         imageRepository.recordUpload(size);
 
         const formatted = formatImageResponse(req, imageRepository.getByPath(relPath) || {
-            filename: originalName,
+            filename: dbFilename,
             rel_path: relPath,
             width: metadata.width,
             height: metadata.height,
@@ -192,10 +207,7 @@ router.post('/upload', requirePassword, upload.any(), handleMulterError, async (
         const metadata = await getFileMetadata(req.file.path, relPath);
 
         // 原始名称处理
-        let originalName = req.file.originalname;
-        if (!/[^\u0000-\u00ff]/.test(originalName)) {
-            try { originalName = Buffer.from(originalName, "latin1").toString("utf8"); } catch (e) { }
-        }
+        let originalName = normalizeOriginalName(req.file.originalname);
 
         const dbResult = imageRepository.add({
             filename: req.file.filename, // 这是磁盘上的保存文件名
@@ -288,34 +300,19 @@ router.post('/process-image', requirePassword, upload.single("image"), async (re
         .png()
         .toBuffer();
 
-      let originalName = req.file.originalname;
-      if (!/[^\u0000-\u00ff]/.test(originalName)) {
-        try { originalName = Buffer.from(originalName, "latin1").toString("utf8"); } catch (e) { }
-      }
+      let originalName = normalizeOriginalName(req.file.originalname);
 
       const ext = path.extname(originalName);
       const nameWithoutExt = path.basename(originalName, ext);
-      let processedFilename = `${nameWithoutExt}_processed_${width}x${height}.png`;
-      processedFilename = sanitizeFilename(processedFilename);
+      const processedSourceName = `${nameWithoutExt || "image"}.png`;
+      let processedFilename = config.upload.autoRename.enabled
+        ? getUploadFilename(processedSourceName, "image/png", ".png")
+        : sanitizeFilename(`${nameWithoutExt}_processed_${width}x${height}.png`);
 
       const dest = safeJoin(STORAGE_PATH, dir);
       await fs.ensureDir(dest);
 
-      let finalFilename = processedFilename;
-      let counter = 1;
-
-      if (!config.upload.allowDuplicateNames) {
-        while (fs.existsSync(path.join(dest, finalFilename))) {
-          if (config.upload.duplicateStrategy === "timestamp") {
-            finalFilename = `${nameWithoutExt}_processed_${width}x${height}_${Date.now()}_${counter}.png`;
-          } else if (config.upload.duplicateStrategy === "counter") {
-            finalFilename = `${nameWithoutExt}_processed_${width}x${height}_${counter}.png`;
-          } else if (config.upload.duplicateStrategy === "overwrite") {
-            break;
-          }
-          counter++;
-        }
-      }
+      let finalFilename = resolveDuplicateFilename(dest, processedFilename);
 
       const processedFilePath = path.join(dest, finalFilename);
       await fs.writeFile(processedFilePath, processedBuffer);
@@ -376,9 +373,9 @@ router.post('/upload-file', requirePassword, uploadAny.single("file"), handleMul
         // Multer 处理了基本命名。`upload-file` 具有自定义的“手动重命名”逻辑。
         // 我需要手动移植该逻辑。
 
-        const customFilename = req.body.filename || req.query.filename;
+        const customFilename = normalizeOriginalName(req.body.filename || req.query.filename || "");
         let finalFilename = req.file.filename;
-        let displayName = req.file.originalname;
+        let displayName = normalizeOriginalName(req.file.originalname);
 
         if (customFilename) {
             let safeCustom = sanitizeFilename(path.basename(customFilename));
