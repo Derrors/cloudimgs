@@ -89,6 +89,12 @@ module.exports = {
       // 是否启用密码保护
       enabled: !!process.env.PASSWORD,
     },
+
+    // 图片/文件直链是否公开访问。
+    // 默认：未设置全局 PASSWORD 时保持传统公开图床行为；设置 PASSWORD 后直链也需要登录态或分享 token。
+    publicImageAccess: process.env.PUBLIC_IMAGE_ACCESS
+      ? process.env.PUBLIC_IMAGE_ACCESS === "true"
+      : !process.env.PASSWORD,
   },
 
   // 魔法搜图配置

@@ -381,7 +381,7 @@ router.post('/upload-file', requirePassword, uploadAny.single("file"), handleMul
         let displayName = req.file.originalname;
 
         if (customFilename) {
-            const safeCustom = sanitizeFilename(path.basename(customFilename));
+            let safeCustom = sanitizeFilename(path.basename(customFilename));
             const targetDir = safeJoin(STORAGE_PATH, dir);
             const oldPath = req.file.path;
             const newPath = path.join(targetDir, safeCustom);

@@ -121,6 +121,7 @@ services:
       # - MAX_FILE_SIZE=104857600 # 最大文件大小，默认 100MB
       # - THUMBNAIL_WIDTH=0 # 瀑布流缩略图宽度（像素），默认 0 表示使用原图
       # - PASSWORD=your_secure_password_here # 🔐 密码保护配置
+      # - PUBLIC_IMAGE_ACCESS=true # 设置 PASSWORD 后如仍需公开直链，可开启
       # - ENABLE_MAGIC_SEARCH=true # ✨ 开启魔法搜索（使用本地CLIP小模型，占用内存较高）
 ```
 
@@ -129,6 +130,7 @@ services:
 | 变量名 | 说明 | 示例 / 默认值 |
 | :--- | :--- | :--- |
 | `PASSWORD` | 设置访问密码，留空则无需密码 | `123456` |
+| `PUBLIC_IMAGE_ACCESS` | 图片/文件直链是否公开；设置 `PASSWORD` 后默认需要登录态或分享 token | `true` / `false` |
 | `ENABLE_MAGIC_SEARCH`| 是否开启 AI 魔法搜索 | `true` / `false` |
 | `MAX_FILE_SIZE` | 最大上传文件限制 (Byte) | `104857600` (100MB) |
 | `THUMBNAIL_WIDTH` | 列表缩略图宽度 (px) | `0` (原图) / `500` |

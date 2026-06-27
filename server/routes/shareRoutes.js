@@ -131,7 +131,7 @@ router.get('/access', (req, res) => {
 
         res.json({
             success: true,
-            data: sliced.map(img => formatImageResponse(req, img)),
+            data: sliced.map(img => formatImageResponse(req, img, { shareToken: token })),
             dirName,
             pagination: {
                 current: parseInt(page),

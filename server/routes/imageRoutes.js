@@ -6,7 +6,8 @@ const sharp = require('sharp');
 sharp.cache(false);
 const config = require('../../config');
 const imageRepository = require('../db/imageRepository');
-const { requirePassword } = require('../middleware/auth');
+const shareRepository = require('../db/shareRepository');
+const { hasValidAccess, requirePassword } = require('../middleware/auth');
 const { safeJoin } = require('../utils/fileUtils');
 const { formatImageResponse } = require('../utils/urlUtils');
 const { getFileMetadata } = require('../services/metadataService');
@@ -14,7 +15,61 @@ const { getFileMetadata } = require('../services/metadataService');
 const router = express.Router();
 const STORAGE_PATH = config.storage.path;
 
-const { isAlbumLocked, verifyAlbumPassword, getAllLockedDirectories } = require('../utils/albumUtils');
+const {
+    createAlbumAccessToken,
+    getAllLockedDirectories,
+    getLockedDirectoryForPath,
+    isAlbumLocked,
+    verifyAlbumAccessToken,
+    verifyAlbumPassword
+} = require('../utils/albumUtils');
+
+function isUnderDirectory(relPath, dir) {
+    if (!dir) return true;
+    return relPath === dir || relPath.startsWith(`${dir}/`);
+}
+
+function isActiveShare(share) {
+    if (!share || share.is_revoked) return false;
+
+    if (share.expire_seconds > 0) {
+        const expireTime = share.created_at + (share.expire_seconds * 1000);
+        if (Date.now() > expireTime) return false;
+    }
+
+    // burn_after_reading is enforced when the share page is opened.
+    // Media URLs emitted for that page must remain loadable for the page render.
+    return true;
+}
+
+function isShareTokenValidForPath(token, relPath) {
+    if (!token) return false;
+    const share = shareRepository.getByToken(token);
+    return isActiveShare(share) && isUnderDirectory(relPath, share.path || "");
+}
+
+async function hasAlbumAccess(req, relPath) {
+    const lockedDir = await getLockedDirectoryForPath(relPath);
+    if (!lockedDir) return true;
+
+    if (config.security.password.enabled && hasValidAccess(req)) return true;
+
+    const albumToken = req.query.albumToken;
+    if (albumToken && await verifyAlbumAccessToken(lockedDir, albumToken)) return true;
+
+    const albumPassword = req.headers["x-album-password"] || req.query.albumPassword;
+    return !!albumPassword && await verifyAlbumPassword(lockedDir, albumPassword);
+}
+
+async function canServeStoredFile(req, relPath) {
+    if (isShareTokenValidForPath(req.query.shareToken, relPath)) return true;
+
+    const albumAllowed = await hasAlbumAccess(req, relPath);
+    if (!albumAllowed) return false;
+
+    if (config.security.publicImageAccess) return true;
+    return config.security.password.enabled && hasValidAccess(req);
+}
 
 // 地图数据 (旧端点支持，现在仅返回 DB 中的所有图像？)
 // 原始 updateMapCache 返回所有图像。
@@ -48,6 +103,7 @@ router.get('/map-data', requirePassword, async (req, res) => {
 router.get('/directories', requirePassword, async (req, res) => {
     try {
         const { CACHE_DIR_NAME, CONFIG_DIR_NAME, TRASH_DIR_NAME } = require('../utils/fileUtils');
+        const lockedDirs = await getAllLockedDirectories();
 
         // 扫描目录
         async function getDirectories(dir) {
@@ -69,9 +125,10 @@ router.get('/directories', requirePassword, async (req, res) => {
                         const isLocked = await isAlbumLocked(relPath);
                         let previews = [];
                         if (!isLocked) {
-                            previews = imageRepository.getPreviews(relPath, 3).map(img =>
-                                `/api/images/${img.rel_path.split("/").map(encodeURIComponent).join("/")}?w=400`
-                            );
+                            previews = imageRepository.getPreviews(relPath, 10)
+                                .filter(img => !lockedDirs.some(locked => isUnderDirectory(img.rel_path, locked)))
+                                .slice(0, 3)
+                                .map(img => `/api/images/${img.rel_path.split("/").map(encodeURIComponent).join("/")}?w=400`);
                         }
                         const count = imageRepository.countByDir(relPath);
 
@@ -101,8 +158,10 @@ router.get('/directories', requirePassword, async (req, res) => {
                         // 如果 API 返回所有目录的扁平列表，那么是的，递归是可以的。
                         // 让我们保持递归结构原样。
 
-                        const children = await getDirectories(relPath);
-                        results = results.concat(children);
+                        if (!isLocked) {
+                            const children = await getDirectories(relPath);
+                            results = results.concat(children);
+                        }
                     }
                 }
             } catch (e) { }
@@ -128,10 +187,13 @@ router.get('/images', requirePassword, async (req, res) => {
         const search = req.query.search || "";
 
         const albumPassword = req.headers["x-album-password"];
-        if (dir && await isAlbumLocked(dir)) {
-            if (!albumPassword || !(await verifyAlbumPassword(dir, albumPassword))) {
+        const lockedDir = dir ? await getLockedDirectoryForPath(dir) : null;
+        let albumToken = null;
+        if (lockedDir) {
+            if (!albumPassword || !(await verifyAlbumPassword(lockedDir, albumPassword))) {
                 return res.status(403).json({ success: false, error: "需要访问密码", locked: true });
             }
+            albumToken = createAlbumAccessToken(lockedDir, albumPassword);
         }
 
         // 使用 SQL 分页，避免全量加载
@@ -150,9 +212,19 @@ router.get('/images', requirePassword, async (req, res) => {
         }
 
         const total = imageRepository.countPaginated(dir, search);
-        const paginated = imageRepository.getPaginated(dir, page, pageSize, search);
+        let paginated = imageRepository.getPaginated(dir, page, pageSize, search);
+        if (!lockedDir) {
+            const lockedDirs = await getAllLockedDirectories();
+            if (lockedDirs.length > 0) {
+                paginated = paginated.filter(img =>
+                    !lockedDirs.some(locked => isUnderDirectory(img.rel_path, locked))
+                );
+            }
+        }
 
-        const result = paginated.map(img => formatImageResponse(req, img));
+        const result = paginated.map(img =>
+            formatImageResponse(req, img, albumToken ? { albumToken } : {})
+        );
 
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
         res.json({
@@ -245,6 +317,10 @@ async function serveImage(req, res, relPath) {
     try {
         const filePath = safeJoin(STORAGE_PATH, relPath);
         if (!await fs.pathExists(filePath)) return res.status(404).json({ error: "Not found" });
+        if (!await canServeStoredFile(req, relPath)) {
+            const status = config.security.password.enabled ? 401 : 403;
+            return res.status(status).json({ error: "Access denied" });
+        }
 
         const { w, h, q, fmt, rows, cols, idx } = req.query;
 
@@ -386,7 +462,13 @@ router.get('/random', async (req, res) => {
             if (lockedDirs.length > 0) {
                 const randomImage = imageRepository.getRandomExclude(lockedDirs);
                 if (!randomImage) return res.status(404).json({ error: "Not Found" });
-                if (req.query.format === 'json') return res.json(formatImageResponse(req, randomImage));
+                if (req.query.format === 'json') {
+                    if (!await canServeStoredFile(req, randomImage.rel_path)) {
+                        const status = config.security.password.enabled ? 401 : 403;
+                        return res.status(status).json({ error: "Access denied" });
+                    }
+                    return res.json(formatImageResponse(req, randomImage));
+                }
                 return await serveImage(req, res, randomImage.rel_path);
             }
         }
@@ -395,6 +477,10 @@ router.get('/random', async (req, res) => {
         if (!randomImage) return res.status(404).json({ error: "Not Found" });
 
         if (req.query.format === 'json') {
+            if (!await canServeStoredFile(req, randomImage.rel_path)) {
+                const status = config.security.password.enabled ? 401 : 403;
+                return res.status(status).json({ error: "Access denied" });
+            }
             return res.json(formatImageResponse(req, randomImage));
         }
 
@@ -413,11 +499,15 @@ router.get('/images/*', async (req, res) => {
 });
 
 // 服务原始文件（无处理）
-router.get('/files/*', (req, res) => {
+router.get('/files/*', async (req, res) => {
     const relPath = decodeURIComponent(req.params[0]);
     try {
         const filePath = safeJoin(STORAGE_PATH, relPath);
         if (fs.existsSync(filePath)) {
+            if (!await canServeStoredFile(req, relPath)) {
+                const status = config.security.password.enabled ? 401 : 403;
+                return res.status(status).json({ error: "Access denied" });
+            }
             res.sendFile(filePath);
         } else {
             res.status(404).json({ error: "Not found" });

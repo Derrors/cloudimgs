@@ -1,6 +1,7 @@
 const express = require('express');
 const imageRepository = require('../db/imageRepository');
 const db = require('../db/database');
+const { clearAuthCookie, requirePassword, setAuthCookie } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -59,13 +60,15 @@ router.post('/auth/login', (req, res) => {
         return res.json({ success: true, message: "No password required" });
     }
     if (password === config.security.password.accessPassword) {
+        setAuthCookie(res);
         return res.json({ success: true, message: "Login successful" });
     }
+    clearAuthCookie(res);
     res.status(401).json({ success: false, error: "Incorrect password" });
 });
 
 // 用户设置 API
-router.get('/settings', (req, res) => {
+router.get('/settings', requirePassword, (req, res) => {
     try {
         const rows = db.prepare('SELECT key, value FROM user_settings').all();
         const settings = {};
@@ -83,7 +86,7 @@ router.get('/settings', (req, res) => {
     }
 });
 
-router.put('/settings', (req, res) => {
+router.put('/settings', requirePassword, (req, res) => {
     try {
         const { key, value } = req.body;
         if (!key) {
@@ -106,7 +109,7 @@ router.put('/settings', (req, res) => {
     }
 });
 
-router.put('/settings/batch', (req, res) => {
+router.put('/settings/batch', requirePassword, (req, res) => {
     try {
         const { settings } = req.body;
         if (!settings || typeof settings !== 'object') {

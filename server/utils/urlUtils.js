@@ -4,15 +4,20 @@ const path = require('path');
  * Formats an image object for JSON response, ensuring fullUrl is an absolute URL.
  * @param {Object} req - Express request object
  * @param {Object} image - Image object (must have rel_path)
+ * @param {Object} options - Optional URL access tokens
  * @returns {Object} Formatted image object
  */
-function formatImageResponse(req, image) {
+function formatImageResponse(req, image, options = {}) {
     // Basic validation
     if (!image || !image.rel_path) return image;
 
     const relPathStr = image.rel_path.split("/").map(encodeURIComponent).join("/");
-    const cacheBuster = image.mtime ? `?t=${Math.floor(new Date(image.mtime).getTime() / 1000)}` : "";
-    const url = `/api/images/${relPathStr}${cacheBuster}`;
+    const params = new URLSearchParams();
+    if (image.mtime) params.set("t", Math.floor(new Date(image.mtime).getTime() / 1000));
+    if (options.shareToken) params.set("shareToken", options.shareToken);
+    if (options.albumToken) params.set("albumToken", options.albumToken);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const url = `/api/images/${relPathStr}${query}`;
     const fullUrl = `${req.protocol}://${req.get('host')}${url}`;
 
     // Parse meta_json if it exists and is a string

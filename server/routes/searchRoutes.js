@@ -2,17 +2,33 @@ const express = require('express');
 const router = express.Router();
 const clipService = require('../services/clipService');
 const { formatImageResponse } = require('../utils/urlUtils');
+const { requirePassword } = require('../middleware/auth');
+const { getAllLockedDirectories } = require('../utils/albumUtils');
+
+function isUnderDirectory(relPath, dir) {
+    if (!dir) return true;
+    return relPath === dir || relPath.startsWith(`${dir}/`);
+}
+
+function filterLockedImages(images, lockedDirs) {
+    if (!lockedDirs.length) return images;
+    return images.filter((image) =>
+        !lockedDirs.some((dir) => isUnderDirectory(image.rel_path, dir))
+    );
+}
 
 // 语义搜索
-router.post('/semantic', async (req, res) => {
+router.post('/semantic', requirePassword, async (req, res) => {
     try {
         const { query, limit } = req.body;
         if (!query) return res.status(400).json({ success: false, error: "Query is required" });
 
         const results = await clipService.search(query, limit || 50);
+        const lockedDirs = await getAllLockedDirectories();
+        const visibleResults = filterLockedImages(results, lockedDirs);
 
         // 使用 formatImageResponse 标准化输出
-        const finalResults = results.map(r => {
+        const finalResults = visibleResults.map(r => {
             const formatted = formatImageResponse(req, r);
             return {
                 ...formatted,
@@ -28,7 +44,7 @@ router.post('/semantic', async (req, res) => {
 });
 
 // 触发全量扫描
-router.post('/scan', async (req, res) => {
+router.post('/scan', requirePassword, async (req, res) => {
     try {
         const result = await clipService.scanAll();
         res.json({ success: true, ...result });
@@ -38,7 +54,7 @@ router.post('/scan', async (req, res) => {
 });
 
 // 重新索引所有图片 (清除 DB 并重新扫描)
-router.post('/reindex', async (req, res) => {
+router.post('/reindex', requirePassword, async (req, res) => {
     try {
         const result = await clipService.reindex();
         res.json({ success: true, ...result });
@@ -48,7 +64,7 @@ router.post('/reindex', async (req, res) => {
 });
 
 // 状态
-router.get('/status', (req, res) => {
+router.get('/status', requirePassword, (req, res) => {
     res.json({
         success: true,
         queueLength: clipService.queue.length,
