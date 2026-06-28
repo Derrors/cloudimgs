@@ -97,18 +97,19 @@
 
 ## 快速部署
 
-推荐使用 Docker Compose。
+推荐使用 Docker Compose。生产环境建议固定版本号，避免 `latest` 自动变化带来不可预期的升级。
 
 ```yaml
 services:
   cloudimgs:
-    build: .
+    image: ghcr.io/derrors/cloudimgs:v2.0.0
     container_name: cloudimgs-app
     restart: unless-stopped
     ports:
       - "3001:3001"
     volumes:
       - ./uploads:/app/uploads:rw
+      - ./logs:/app/logs:rw
     environment:
       - PUID=1000
       - PGID=1000
@@ -127,7 +128,13 @@ services:
       # - ENABLE_MAGIC_SEARCH=true
 ```
 
-如需使用已发布镜像，可将 `build: .` 替换为你自己的镜像名。原项目镜像 `qazzxxx/cloudimgs:latest` 可用于体验上游能力，但不会包含本 fork 未合并到上游的改动。
+可用镜像标签：
+
+- `ghcr.io/derrors/cloudimgs:v2.0.0`：当前发布版本，推荐生产环境使用。
+- `ghcr.io/derrors/cloudimgs:2.0.0`：同版本的无 `v` 标签。
+- `ghcr.io/derrors/cloudimgs:latest`：最新发布镜像，适合测试或跟随更新。
+
+如果 GHCR 拉取提示无权限，请先在 GitHub Packages 中确认镜像可见性，或执行 `docker login ghcr.io` 后再部署。原项目镜像 `qazzxxx/cloudimgs:latest` 可用于体验上游能力，但不会包含本 fork 未合并到上游的改动。
 
 ---
 
@@ -242,6 +249,7 @@ npm start
 ### Unreleased
 
 - README 更新为当前 fork 项目说明，补充原项目来源、fork 改动、访问控制和变更记录。
+- Docker Compose 部署示例改为使用本 fork 已发布的 GHCR 镜像。
 
 ### 2026-06-27
 
